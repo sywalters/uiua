@@ -21,7 +21,14 @@ use crate::{
 
 node!(
     /// Create an array
-    Array { len: ArrayLen, inner: Arc<Node>, boxed: bool, prim: Option<Primitive>, span: usize },
+    Array {
+        len: ArrayLen,
+        inner: Arc<Node>,
+        boxed: bool,
+        allow_ext: bool,
+        prim: Option<Primitive>,
+        span: usize
+    },
     /// Get a global value
     CallGlobal(index(usize), sig(Signature)),
     /// Call a recursive macro
@@ -41,7 +48,13 @@ node!(
     /// A switch with branches
     Switch { branches: Ops, sig: Signature, under_cond: bool, span: usize },
     /// Unpack an array onto the stack
-    Unpack { count: usize, unbox: bool, prim: Option<Primitive>, span: usize },
+    Unpack {
+        count: usize,
+        unbox: bool,
+        allow_ext: bool,
+        prim: Option<Primitive>,
+        span: usize
+    },
     /// Set some values for an output comment
     SetOutputComment { i: usize, n: usize },
     /// Validate that a value has a certain type
@@ -64,6 +77,8 @@ node!(
     GetLocal { def: usize, span: usize },
     /// Set a local value
     SetLocal { def: usize, span: usize },
+    /// Normalize a struct-of-arrays data def
+    NormalizeSoA { len_index: usize, mask: u64, span: usize },
     /// Push a value onto the stack
     (#[serde(untagged)] rep),
     Push(val(Value)),
@@ -707,6 +722,9 @@ impl fmt::Debug for Node {
             }
             Node::GetLocal { def, .. } => write!(f, "get-local {def}"),
             Node::SetLocal { def, .. } => write!(f, "set-local {def}"),
+            Node::NormalizeSoA {
+                len_index, mask, ..
+            } => write!(f, "normalize-soa({len_index}, {mask})"),
         }
     }
 }

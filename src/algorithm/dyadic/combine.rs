@@ -882,6 +882,25 @@ impl Value {
         V: Indexable<Item = Value>,
         C: FillContext,
     {
+        Self::from_row_values_impl(values, ctx, false)
+    }
+    /// Create a value from row values, allowing shape extension
+    pub fn from_row_values_ext<V, C>(values: V, ctx: &C) -> Result<Self, C::Error>
+    where
+        V: Indexable<Item = Value>,
+        C: FillContext,
+    {
+        Self::from_row_values_impl(values, ctx, true)
+    }
+    pub(crate) fn from_row_values_impl<V, C>(
+        values: V,
+        ctx: &C,
+        allow_ext: bool,
+    ) -> Result<Self, C::Error>
+    where
+        V: Indexable<Item = Value>,
+        C: FillContext,
+    {
         fn max_shape(a: Shape, b: &Shape) -> Shape {
             if a.starts_with(b) {
                 return a;
@@ -1029,7 +1048,9 @@ impl Value {
 
         // Fill value
         value.match_fill(ctx);
-        if value.shape() != &max_shape {
+        if !allow_ext && value.shape() != &max_shape
+            || allow_ext && !max_shape.ends_with(value.shape())
+        {
             match &mut value {
                 Value::Num(arr) => match ctx.scalar_fill::<f64>() {
                     Ok(fill) => arr.fill_to_shape(&max_shape, fill),
@@ -1088,14 +1109,19 @@ impl Value {
         value.reserve_min(total_elements);
 
         // Combine the arrays
+        if allow_ext {
+            for d in max_shape.iter().take(max_shape.len() - value.rank()).rev() {
+                value.reshape_scalar(Ok(*d as isize), ctx)?;
+            }
+        }
         value.shape_mut().insert(0, 1);
         value.take_label();
         Ok(match value {
             Value::Num(mut a) => {
                 for val in row_values {
                     match val {
-                        Value::Num(b) => a.append(b, false, ctx)?,
-                        Value::Byte(b) => a.append(b.convert(), false, ctx)?,
+                        Value::Num(b) => a.append(b, allow_ext, ctx)?,
+                        Value::Byte(b) => a.append(b.convert(), allow_ext, ctx)?,
                         _ => unreachable!(),
                     }
                 }
@@ -1104,7 +1130,7 @@ impl Value {
             Value::Byte(mut a) => {
                 for val in row_values {
                     match val {
-                        Value::Byte(b) => a.append(b, false, ctx)?,
+                        Value::Byte(b) => a.append(b, allow_ext, ctx)?,
                         _ => unreachable!(),
                     }
                 }
@@ -1113,9 +1139,9 @@ impl Value {
             Value::Complex(mut a) => {
                 for val in row_values {
                     match val {
-                        Value::Num(b) => a.append(b.convert(), false, ctx)?,
-                        Value::Byte(b) => a.append(b.convert(), false, ctx)?,
-                        Value::Complex(b) => a.append(b, false, ctx)?,
+                        Value::Num(b) => a.append(b.convert(), allow_ext, ctx)?,
+                        Value::Byte(b) => a.append(b.convert(), allow_ext, ctx)?,
+                        Value::Complex(b) => a.append(b, allow_ext, ctx)?,
                         _ => unreachable!(),
                     }
                 }
@@ -1124,7 +1150,7 @@ impl Value {
             Value::Char(mut a) => {
                 for val in row_values {
                     match val {
-                        Value::Char(b) => a.append(b, false, ctx)?,
+                        Value::Char(b) => a.append(b, allow_ext, ctx)?,
                         _ => unreachable!(),
                     }
                 }
@@ -1133,8 +1159,8 @@ impl Value {
             Value::Box(mut a) => {
                 for val in row_values {
                     match val {
-                        Value::Box(b) => a.append(b, false, ctx)?,
-                        val => a.append(val.box_depth(a.rank()), false, ctx)?,
+                        Value::Box(b) => a.append(b, allow_ext, ctx)?,
+                        val => a.append(val.box_depth(a.rank()), allow_ext, ctx)?,
                     }
                 }
                 a.into()

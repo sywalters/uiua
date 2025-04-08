@@ -20,7 +20,7 @@ use thread_local::ThreadLocal;
 use threadpool::ThreadPool;
 
 use crate::{
-    algorithm::{self, validate_size_impl},
+    algorithm::{self, shape_prefixes_match, validate_size_impl},
     ast::SubSide,
     fill::{Fill, FillValue},
     invert::match_format_pattern,
@@ -591,9 +591,12 @@ impl Uiua {
                 len,
                 inner,
                 boxed,
+                allow_ext,
                 span,
                 ..
-            } => self.with_span(span, |env| env.make_array(len, inner.into(), boxed)),
+            } => self.with_span(span, |env| {
+                env.make_array(len, inner.into(), boxed, allow_ext)
+            }),
             Node::Call(f, span) => self.call_with_span(&f, span),
             Node::CustomInverse(cust, span) => match &cust.normal {
                 Ok(normal) => self.exec_with_span(normal.clone(), span),
@@ -668,6 +671,7 @@ impl Uiua {
                 span,
                 prim,
                 unbox,
+                ..
             } => self.with_span(span, |env| {
                 let arr = env.pop(1)?;
                 if arr.row_count() != count || arr.shape() == [] {
@@ -776,6 +780,47 @@ impl Uiua {
                     Some(name) => format!("Not currently in a scope for def `{name}`"),
                     None => "Not currently in a scope for data def".into(),
                 }))
+            }),
+            Node::NormalizeSoA {
+                len_index,
+                mut mask,
+                span,
+            } => self.with_span(span, |env| {
+                let mut val = env.pop(1)?;
+                if val.row_count() <= len_index {
+                    return Err(env.error(format!(
+                        "Attempted to normalize array with {} rows based on \
+                        the length of row {}. This is a bug in the interpreter.",
+                        val.row_count(),
+                        len_index
+                    )));
+                }
+                let Value::Box(arr) = &mut val else {
+                    return Err(env.error(
+                        "Attempted to normalize a non-box array. \
+                        This is a bug in the interpreter.",
+                    ));
+                };
+                let data = arr.data.as_mut_slice();
+                let shape = data[len_index].0.shape().clone();
+                let mut i = 0;
+                while mask != 0 {
+                    if mask & 1 == 1 {
+                        for &d in shape.iter().rev() {
+                            data[i].0.reshape_scalar(Ok(d as isize), env)?;
+                        }
+                    } else if i != len_index && !shape_prefixes_match(&shape, data[i].0.shape()) {
+                        return Err(env.error(format!(
+                            "Fields {len_index} and {i} have incompatible \
+                            shapes {shape} and {}",
+                            data[i].0.shape()
+                        )));
+                    }
+                    mask >>= 1;
+                    i += 1;
+                }
+                env.push(val);
+                Ok(())
             }),
         };
         if self.rt.time_instrs {
@@ -1050,7 +1095,13 @@ impl Uiua {
     pub(crate) fn touch_stack(&self, n: usize) -> UiuaResult {
         self.require_height(n).map(drop)
     }
-    pub(crate) fn make_array(&mut self, len: ArrayLen, inner: Node, boxed: bool) -> UiuaResult {
+    pub(crate) fn make_array(
+        &mut self,
+        len: ArrayLen,
+        inner: Node,
+        boxed: bool,
+        allow_ext: bool,
+    ) -> UiuaResult {
         let start_height = self.stack_height();
         self.rt.array_depth += 1;
         let res = self.exec(inner);
@@ -1075,7 +1126,7 @@ impl Uiua {
             let elems: usize = values.iter().map(Value::element_count).sum();
             let elem_size = values.first().map_or(size_of::<f64>(), Value::elem_size);
             validate_size_impl(elem_size, [elems]).map_err(|e| self.error(e))?;
-            Value::from_row_values(values, self)?
+            Value::from_row_values_impl(values, self, allow_ext)?
         };
         self.push(val);
         Ok(())
